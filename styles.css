@@ -56,6 +56,9 @@ button{cursor:pointer;background:none;border:0;padding:0}
 .chip{flex:none;font-size:14px;font-weight:600;padding:6px 12px;border-radius:999px;background:var(--card);color:var(--fg);box-shadow:inset 0 0 0 1px var(--sep)}
 .chip[aria-pressed="true"]{background:var(--accent);color:var(--accent-ink);box-shadow:none}
 
+.chip .cn{font-weight:500;opacity:.6;font-size:12px;margin-left:2px}
+.chip[aria-pressed="true"] .cn{opacity:.85}
+
 /* grouped lists */
 .section-h{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin:22px 16px 7px;font-weight:500}
 .group{background:var(--card);border-radius:var(--r);overflow:hidden}
@@ -77,6 +80,13 @@ button.cell:active{background:var(--fill)}
 
 .empty{text-align:center;color:var(--muted);padding:40px 20px;display:grid;gap:8px;justify-items:center}
 .empty b{color:var(--fg);font-size:19px}
+
+.cell .ih{display:block;font-size:13px;color:var(--accent);margin-top:2px}
+.star{color:var(--saffron)}
+.navr{display:flex;align-items:center;gap:18px}
+.nav .act.star{font-size:24px;line-height:1;color:var(--faint);padding:6px 2px}
+.nav .act.star.on{color:var(--saffron)}
+.banner .btn.sm{min-height:40px;margin-top:10px;font-size:16px;border-radius:10px}
 
 /* recipe */
 .facts{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 14px}

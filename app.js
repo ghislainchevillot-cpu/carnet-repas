@@ -7,13 +7,24 @@ const sb = CONFIGURED ? window.supabase.createClient(CFG.supabaseUrl, CFG.supaba
   auth: { persistSession: true, autoRefreshToken: true, storageKey: 'carnet-auth' }
 }) : null;
 
-const CATS = ['Tout', 'Plat batch', 'Week-end', 'Petit-déjeuner', 'Dessert', 'Autre'];
-const TAGS = [['congelable','Congelable'],['à valider','À valider'],['volaille','Volaille'],['bœuf','Bœuf'],['porc','Porc'],['poisson','Poisson'],['légumineuses','Légumineuses'],['pâtes','Pâtes'],['pommes de terre','Pommes de terre'],['champignons','Champignons'],['shaker','Shaker requis']];
+const CATS = ['Tout', 'Plat batch', 'Week-end', 'Plat', 'Soupe', 'Salade', 'Accompagnement', 'Quiche & salé', 'Petit-déjeuner', 'Boisson', 'Dessert', 'Pain & viennoiserie', 'Sauce & base', 'Autre'];
+const TAGS = [['favoris','★ Favoris'],['à valider','À valider'],['à traduire','À traduire'],['congelable','Congelable'],['volaille','Volaille'],['bœuf','Bœuf'],['porc','Porc'],['poisson','Poisson'],['légumineuses','Légumineuses'],['pâtes','Pâtes'],['pommes de terre','Pommes de terre'],['champignons','Champignons'],['shaker','Shaker requis']];
+
+// Recherche : équivalents anglais pour les recettes pas encore traduites
+const SYN = {poulet:'chicken',dinde:'turkey',boeuf:'beef',porc:'pork',saumon:'salmon',cabillaud:'cod',oeuf:'egg',oeufs:'egg',
+  'pois chiches':'chickpea','pois chiche':'chickpea',lentilles:'lentil',lentille:'lentil',haricots:'bean',haricot:'bean',riz:'rice',pates:'pasta',
+  avoine:'oat',flocons:'oat',farine:'flour',sucre:'sugar',lait:'milk',beurre:'butter',fromage:'cheese',yaourt:'yogurt',
+  courgette:'zucchini',courgettes:'zucchini','patate douce':'sweet potato','patates douces':'sweet potato',butternut:'butternut',potiron:'pumpkin',courge:'squash',
+  carotte:'carrot',carottes:'carrot',epinards:'spinach','chou-fleur':'cauliflower','chou fleur':'cauliflower',brocoli:'broccoli',chou:'cabbage',
+  champignons:'mushroom',champignon:'mushroom',oignon:'onion',ail:'garlic',tomate:'tomato',tomates:'tomato',poivron:'pepper',poivrons:'pepper',
+  pomme:'apple',pommes:'apple',banane:'banana',myrtilles:'blueberr',myrtille:'blueberr',fraise:'strawberr',fraises:'strawberr',citron:'lemon',
+  'citron vert':'lime',coco:'coconut',chocolat:'chocolate',cacao:'cocoa',miel:'honey',cannelle:'cinnamon',gingembre:'ginger',coriandre:'cilantro',
+  'pomme de terre':'potato','pommes de terre':'potato',mais:'corn',quinoa:'quinoa',tofu:'tofu',feta:'feta',mozzarella:'mozzarella'};
 
 const S = {
   session: null, role: null, online: navigator.onLine,
   recettes: new Map(), seances: new Map(), loaded: false, syncedAt: null,
-  route: { name: 'recettes' }, q: '', cat: 'Tout', tag: null,
+  route: { name: 'recettes' }, q: '', cat: 'Tout', tag: null, favs: new Set(),
   portions: {}, checked: {}, confirmDel: false, cook: null, timers: [], busy: false
 };
 
@@ -69,12 +80,13 @@ const stepToLine = s => s.t + (s.min ? ' [' + s.min + ' min]' : '');
 /* ---------- données ---------- */
 const CACHE_KEY = 'carnet-cache-v1';
 function saveCache() {
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: S.syncedAt, role: S.role, recettes: [...S.recettes.values()], seances: [...S.seances.values()] })); } catch {}
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: S.syncedAt, role: S.role, favs: [...S.favs], recettes: [...S.recettes.values()], seances: [...S.seances.values()] })); } catch {}
 }
 function loadCache() {
   try {
     const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); if (!c) return false;
     S.recettes = new Map(c.recettes.map(r => [r.id, r])); S.seances = new Map(c.seances.map(s => [s.id, s]));
+    S.favs = new Set(c.favs || []);
     S.syncedAt = c.at; S.role = S.role || c.role; S.loaded = true; return true;
   } catch { return false; }
 }
@@ -82,15 +94,17 @@ async function refresh(silent) {
   if (!sb || !S.session) return;
   try {
     const email = S.session.user.email;
-    const [r, s, m] = await Promise.all([
+    const [r, s, m, f] = await Promise.all([
       sb.from('recettes').select('*').order('titre'),
       sb.from('seances').select('*').order('date', { ascending: false }),
-      sb.from('membres').select('role').ilike('email', email).maybeSingle()
+      sb.from('membres').select('role').ilike('email', email).maybeSingle(),
+      sb.from('favoris').select('recette_id')
     ]);
     if (r.error) throw r.error; if (s.error) throw s.error;
     S.recettes = new Map(r.data.map(x => [x.id, x]));
     S.seances = new Map(s.data.map(x => [x.id, x]));
     S.role = m.data?.role || null;
+    if (!f.error) S.favs = new Set(f.data.map(x => x.recette_id));
     S.loaded = true; S.online = true; S.syncedAt = new Date().toISOString();
     saveCache();
   } catch (e) {
@@ -179,46 +193,73 @@ function tagsHtml(r) {
     const n = norm(t);
     if (n === 'shaker') out.push('<span class="tag shk">Shaker requis</span>');
     else if (n === 'a valider') out.push('<span class="tag chk">À valider</span>');
+    else if (n === 'a traduire') out.push('<span class="tag chk">À traduire</span>');
+    else if (n === 'paprika') return;
     else out.push(`<span class="tag">${esc(t)}</span>`);
   });
   return out.join('');
 }
 function recList() { return [...S.recettes.values()].sort((a, b) => String(a.titre).localeCompare(String(b.titre), 'fr')); }
-function filtered() {
-  const q = norm(S.q);
-  return recList().filter(r => {
-    if (S.cat !== 'Tout' && r.categorie !== S.cat) return false;
-    if (S.tag === 'congelable' && !r.congelable) return false;
-    if (S.tag && S.tag !== 'congelable' && !(r.tags || []).map(norm).includes(norm(S.tag))) return false;
-    if (!q) return true;
-    const hay = norm([r.titre, r.categorie, (r.tags || []).join(' '), (r.ingredients || []).map(i => i.n || i.grp).join(' ')].join(' '));
-    return q.split(/\s+/).every(w => hay.includes(w));
+// Découpe la recherche en termes, en gardant ensemble les expressions connues (« pomme de terre »).
+function terms(q) {
+  q = norm(q).trim(); if (!q) return [];
+  const out = [];
+  Object.keys(SYN).filter(k => k.includes(' ')).sort((a, b) => b.length - a.length).forEach(k => {
+    const n = norm(k); if (q.includes(n)) { out.push(n); q = q.replace(n, ' '); }
   });
+  return out.concat(q.split(/\s+/).filter(Boolean));
+}
+const synOf = w => { const k = Object.keys(SYN).find(x => norm(x) === w); return k ? SYN[k] : null; };
+function hit(hay, w) { const e = synOf(w); return hay.includes(w) || (e && hay.includes(e)); }
+function passesFilters(r, cat) {
+  if (cat !== 'Tout' && r.categorie !== cat) return false;
+  if (S.tag === 'favoris') return S.favs.has(r.id);
+  if (S.tag === 'congelable' && !r.congelable) return false;
+  if (S.tag && S.tag !== 'congelable' && !(r.tags || []).map(norm).includes(norm(S.tag))) return false;
+  return true;
+}
+function matches(r, ws) {
+  if (!ws.length) return true;
+  const hay = norm([r.titre, r.categorie, (r.tags || []).join(' '), (r.ingredients || []).map(i => i.n || i.grp).join(' ')].join(' '));
+  return ws.every(w => hit(hay, w));
+}
+// Ingrédients qui correspondent à la recherche, affichés sous le titre quand le titre ne suffit pas.
+function ingHits(r, ws) {
+  if (!ws.length) return [];
+  const t = norm(r.titre);
+  const need = ws.filter(w => !hit(t, w)); if (!need.length) return [];
+  return (r.ingredients || []).filter(i => i.n && need.some(w => hit(norm(i.n), w))).map(i => i.n).slice(0, 3);
+}
+function filtered() {
+  const ws = terms(S.q);
+  return recList().filter(r => passesFilters(r, S.cat) && matches(r, ws));
 }
 function offlineBanner() {
   return S.online ? '' : `<div class="banner off">Hors connexion. Copie du ${esc(fmtDate(S.syncedAt, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }))}.</div>`;
 }
 function viewList() {
-  const chipsC = CATS.map(c => `<button class="chip" data-cat="${esc(c)}" aria-pressed="${S.cat === c}">${esc(c)}</button>`).join('');
+  const ws = terms(S.q), counts = {};
+  S.recettes.forEach(r => { if (passesFilters(r, 'Tout') && matches(r, ws)) { counts.Tout = (counts.Tout || 0) + 1; counts[r.categorie] = (counts[r.categorie] || 0) + 1; } });
+  const chipsC = CATS.filter(c => c === 'Tout' || c === S.cat || counts[c]).map(c => `<button class="chip" data-cat="${esc(c)}" aria-pressed="${S.cat === c}">${esc(c)} <span class="cn">${counts[c] || 0}</span></button>`).join('');
   const chipsT = TAGS.map(([k, l]) => `<button class="chip" data-tag="${esc(k)}" aria-pressed="${S.tag === k}">${esc(l)}</button>`).join('');
   return `<div class="nav"><span></span>${isEditor() ? '<button class="act" data-go="#/nouvelle">Ajouter</button>' : ''}</div>
   <h1 class="large">Recettes</h1>
   ${offlineBanner()}
-  <label class="search">${ICON.search}<input type="search" id="q" placeholder="Plat, ingrédient…" value="${esc(S.q)}" autocomplete="off" enterkeyhint="search"></label>
-  <div class="chips">${chipsC}</div>
+  <label class="search">${ICON.search}<input type="search" id="q" placeholder="Plat ou ingrédients : poulet courgette…" value="${esc(S.q)}" autocomplete="off" enterkeyhint="search"></label>
+  <div class="chips" id="chipsC">${chipsC}</div>
   <div class="chips">${chipsT}</div>
   <div id="results">${listResults()}</div>`;
 }
 function listResults() {
   if (!S.loaded) return '<div class="empty">Chargement des recettes…</div>';
   if (!S.recettes.size) return `<div class="empty"><b>Aucune recette</b><span>Les fiches créées avec Claude apparaîtront ici.</span></div>`;
-  const rows = filtered();
-  if (!rows.length) return '<div class="empty"><b>Aucun résultat</b><span>Essayez un autre mot ou retirez un filtre.</span></div>';
-  return `<div class="section-h">${rows.length} recette${rows.length > 1 ? 's' : ''}</div><div class="group">` + rows.map(r => `
+  const rows = filtered(), ws = terms(S.q);
+  if (!rows.length) return `<div class="empty"><b>Aucun résultat</b><span>${S.tag === 'favoris' && !S.favs.size ? 'Touchez l\'étoile d\'une recette pour l\'ajouter à vos favoris.' : 'Essayez un autre mot ou retirez un filtre.'}</span></div>`;
+  return `<div class="section-h">${rows.length} recette${rows.length > 1 ? 's' : ''}</div><div class="group">` + rows.map(r => { const ih = ingHits(r, ws); return `
     <button class="cell" data-go="#/r/${esc(encodeURIComponent(r.id))}">
-      <span class="main"><span class="t">${esc(r.titre)}</span><span class="m"><span class="tag cat">${esc(r.categorie || 'Autre')}</span>${tagsHtml(r)}</span></span>
+      <span class="main"><span class="t">${S.favs.has(r.id) ? '<span class="star on" aria-label="Favori">★</span> ' : ''}${esc(r.titre)}</span>${ih.length ? `<span class="ih">${esc(ih.join(' · '))}</span>` : ''}<span class="m"><span class="tag cat">${esc(r.categorie || 'Autre')}</span>${tagsHtml(r)}</span></span>
       <span class="r num">×${esc(r.portions)}</span>${ICON.chev}
-    </button>`).join('') + '</div>';
+    </button>`; }).join('') + '</div>';
 }
 
 function curPortions(r) { return S.portions[r.id] ?? r.portions ?? 1; }
@@ -242,15 +283,18 @@ function viewRecipe() {
   if (!r) return `<div class="nav">${backBtn('#/', 'Recettes')}</div><div class="empty"><b>Recette introuvable</b></div>`;
   const p = curPortions(r);
   const kv = [['Accompagnement', r.accompagnement], ['Protéines Papa', r.proteines], ['Conservation', r.conservation], ['Origine', r.source]].filter(x => x[1]);
-  const aValider = (r.tags || []).some(t => norm(t) === 'a valider');
-  return `<div class="nav">${backBtn('#/', 'Recettes')}${isEditor() ? `<button class="act" data-go="#/r/${esc(encodeURIComponent(r.id))}/modifier">Modifier</button>` : ''}</div>
+  const aValider = (r.tags || []).some(t => norm(t) === 'a valider'), aTraduire = (r.tags || []).some(t => norm(t) === 'a traduire');
+  const fav = S.favs.has(r.id);
+  return `<div class="nav">${backBtn('#/', 'Recettes')}<span class="navr"><button class="act star ${fav ? 'on' : ''}" data-act="fav" aria-pressed="${fav}" aria-label="${fav ? 'Retirer des favoris' : 'Ajouter aux favoris'}">${fav ? '★' : '☆'}</button>${isEditor() ? `<button class="act" data-go="#/r/${esc(encodeURIComponent(r.id))}/modifier">Modifier</button>` : ''}</span></div>
   <h1 class="large">${esc(r.titre)}</h1>
   <div class="facts"><span class="tag cat">${esc(r.categorie || 'Autre')}</span>${tagsHtml(r)}</div>
-  ${aValider ? '<div class="banner"><b>À valider.</b> Étapes rédigées à partir du menu : à corriger après la première préparation.</div>' : ''}
+  ${aTraduire ? '<div class="banner"><b>Pas encore traduite.</b> Recette d\'origine en anglais, quantités non converties.</div>' : ''}
+  ${aValider && !aTraduire ? `<div class="banner"><b>À valider.</b> Quantités et étapes à vérifier lors de la première préparation.${isEditor() ? '<button class="btn pri sm" data-act="valider">Valider la recette</button>' : ''}</div>` : ''}
   <div class="group"><div class="cell"><span class="main">Portions</span><div class="stepper"><button data-por="-1" aria-label="Moins">−</button><output class="num">${esc(p)}</output><button data-por="1" aria-label="Plus">+</button></div></div></div>
   ${(r.etapes || []).length ? '<div class="btns"><button class="btn pri" data-act="cook">Mode cuisine</button></div>' : ''}
   <div class="section-h">Ingrédients · ${esc(p)} portion${p > 1 ? 's' : ''}</div>
   ${ingCells(r, r.id)}
+  ${(r.ingredients || []).length ? '<div class="btns"><button class="btn" data-act="copy-rec">Copier la liste pour Todoist</button></div><p class="hint">Les ingrédients cochés (déjà en stock) ne sont pas copiés.</p>' : ''}
   ${(r.etapes || []).length ? `<div class="section-h">Étapes</div>${stepsHtml(r.etapes)}` : ''}
   ${kv.length ? '<div class="section-h">Infos</div><div class="group kv">' + kv.map(([k, v]) => `<div class="cell"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`).join('') + '</div>' : ''}
   ${r.notes ? `<div class="section-h">Notes</div><div class="note">${esc(r.notes)}</div>` : ''}
@@ -346,6 +390,8 @@ function viewSeance() {
     const split = Object.keys(i.parts).length > 1 && i.hasQ ? `<span class="split">${esc(short(a))} ${esc(fmtQ(i.parts.A, i.u))} · ${esc(short(b))} ${esc(fmtQ(i.parts.B, i.u))}</span>` : '';
     return `<label class="cell ing"><input type="checkbox" data-chk="${esc(key)}" data-k="${k}" ${chk[k] ? 'checked' : ''}><span class="q num">${esc(i.hasQ ? fmtQ(i.q, i.u) : '')}</span><span class="n">${esc(i.n)}${split}</span></label>`;
   }).join('')}</div>
+  <div class="btns"><button class="btn" data-act="copy-sea">Copier la liste pour Todoist</button></div>
+  <p class="hint">Les ingrédients cochés (déjà en stock) ne sont pas copiés.</p>
   <div class="section-h">Déroulé</div>${stepsHtml(steps, whoLabel(s))}
   ${s.notes ? `<div class="section-h">Notes</div><div class="note">${esc(s.notes)}</div>` : ''}
   <div class="section-h">Fiches</div><div class="group">
@@ -464,6 +510,12 @@ document.addEventListener('click', async e => {
     case 'cook-prev': S.cook.i = Math.max(0, S.cook.i - 1); render(); return;
     case 'cook-next': if (S.cook.i >= S.cook.steps.length - 1) return stopCook(); S.cook.i++; render(); return;
     case 'cook-close': return stopCook();
+    case 'fav': return toggleFav(S.route.id);
+    case 'valider': return validerRecette(S.route.id);
+    case 'copy-rec': { const r = S.recettes.get(S.route.id); const chk = S.checked[r.id] || {}; const f = curPortions(r) / (r.portions || 1);
+      return copyList((r.ingredients || []).map((i, k) => i.grp || chk[k] ? null : { n: i.n, q: i.q == null ? null : i.q * f, u: i.u }).filter(Boolean)); }
+    case 'copy-sea': { const s = S.seances.get(S.route.id); const chk = S.checked['sea-' + s.id] || {};
+      return copyList(mergedIngs(s).map((i, k) => chk[k] ? null : { n: i.n, q: i.hasQ ? i.q : null, u: i.u }).filter(Boolean)); }
     case 'del': S.confirmDel = true; return render();
     case 'del-no': S.confirmDel = false; return render();
     case 'del-yes': try { await deleteRow('recettes', S.route.id); S.recettes.delete(S.route.id); saveCache(); toast('Recette supprimée'); go('#/'); } catch (err) { writeFailed(err); } return;
@@ -478,7 +530,10 @@ document.addEventListener('change', e => {
   if (el.dataset.chk) (S.checked[el.dataset.chk] ||= {})[el.dataset.k] = el.checked;
 });
 document.addEventListener('input', e => {
-  if (e.target.id === 'q') { S.q = e.target.value; $('#results').innerHTML = listResults(); }
+  if (e.target.id === 'q') {
+    S.q = e.target.value; $('#results').innerHTML = listResults();
+    const tmp = document.createElement('div'); tmp.innerHTML = viewList(); $('#chipsC').innerHTML = tmp.querySelector('#chipsC').innerHTML;
+  }
 });
 document.addEventListener('submit', async e => {
   e.preventDefault();
@@ -523,6 +578,35 @@ async function saveSeance() {
   const row = { id: uniqueId('s-' + (date || new Date().toISOString().slice(0, 10)) + '-' + slug(ra.titre).slice(0, 20), S.seances), titre: ra.titre + ' + ' + rb.titre, a, b, date, etapes: [], notes: '' };
   try { await writeRow('seances', row); S.seances.set(row.id, row); saveCache(); go('#/s/' + encodeURIComponent(row.id)); }
   catch (err) { writeFailed(err); }
+}
+async function toggleFav(id) {
+  const on = !S.favs.has(id);
+  on ? S.favs.add(id) : S.favs.delete(id); render();
+  try {
+    const { error } = on ? await sb.from('favoris').insert({ recette_id: id }) : await sb.from('favoris').delete().eq('recette_id', id);
+    if (error && !/duplicate/i.test(error.message)) throw error;
+    saveCache(); toast(on ? 'Ajoutée aux favoris' : 'Retirée des favoris');
+  } catch (err) { on ? S.favs.delete(id) : S.favs.add(id); render(); writeFailed(err); }
+}
+async function validerRecette(id) {
+  const r = S.recettes.get(id); if (!r) return;
+  const tags = (r.tags || []).filter(t => norm(t) !== 'a valider');
+  try {
+    const { error } = await sb.from('recettes').update({ tags }).eq('id', id);
+    if (error) throw error;
+    r.tags = tags; saveCache(); render(); toast('Recette validée');
+  } catch (err) { writeFailed(err); }
+}
+// Une ligne par article : Todoist propose d'en faire autant de tâches au collage.
+async function copyList(items) {
+  if (!items.length) return toast('Rien à copier : tout est coché.');
+  const text = items.map(i => i.n.charAt(0).toUpperCase() + i.n.slice(1) + (i.q != null ? ' (' + fmtQ(i.q, i.u) + ')' : '')).join('\n');
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; } catch {
+    const ta = document.createElement('textarea'); ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch {} ta.remove();
+  }
+  toast(ok ? items.length + ' article' + (items.length > 1 ? 's' : '') + ' copié' + (items.length > 1 ? 's' : '') + ' : collez dans Todoist' : 'Copie impossible sur cet appareil');
 }
 function exportAll() {
   const data = JSON.stringify({ exporte: new Date().toISOString(), recettes: recList(), seances: [...S.seances.values()] }, null, 2);
