@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Carnet Repas</title>
+<meta name="description" content="Recettes de la famille : fiches en grammes, séances de batch, mode cuisine.">
+<meta name="theme-color" content="#f2f3ef" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d110f" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Carnet Repas">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="icon" type="image/png" href="icons/favicon.png">
+<link rel="stylesheet" href="styles.css?v=1">
+</head>
+<body>
+<div id="toast" class="toast" role="status" hidden></div>
+<div id="app"></div>
+<div id="dock" class="dock" aria-live="polite"></div>
+<nav id="tabbar" class="tabbar" hidden>
+  <button data-tab="recettes" aria-label="Recettes">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4Z"/><path d="M8 20a3 3 0 0 1-3-3"/><path d="M9 8h6M9 12h6"/></svg>
+    <span>Recettes</span>
+  </button>
+  <button data-tab="seances" aria-label="Séances">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 11h16v2a7 7 0 0 1-7 7h-2a7 7 0 0 1-7-7v-2Z"/><path d="M9 7c0-1.5 1-1.5 1-3M14 7c0-1.5 1-1.5 1-3"/></svg>
+    <span>Séances</span>
+  </button>
+  <button data-tab="reglages" aria-label="Réglages">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+    <span>Compte</span>
+  </button>
+</nav>
+<script src="config.js?v=1"></script>
+<script src="vendor/supabase.js"></script>
+<script src="app.js?v=1"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+}
+</script>
+</body>
+</html>
