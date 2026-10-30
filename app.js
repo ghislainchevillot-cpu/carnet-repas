@@ -24,7 +24,8 @@ const SYN = {poulet:'chicken',dinde:'turkey',boeuf:'beef',porc:'pork',saumon:'sa
 const S = {
   session: null, role: null, online: navigator.onLine,
   recettes: new Map(), seances: new Map(), loaded: false, syncedAt: null,
-  route: { name: 'recettes' }, q: '', cat: 'Tout', tag: null, favs: new Set(),
+  personnes: [], periodes: new Map(), creneaux: [], semaine: null, prevHash: '', curHash: '',
+  route: { name: 'avenir' }, q: '', cat: 'Tout', tag: null, favs: new Set(),
   portions: {}, checked: {}, confirmDel: false, cook: null, timers: [], busy: false
 };
 
@@ -80,13 +81,14 @@ const stepToLine = s => s.t + (s.min ? ' [' + s.min + ' min]' : '');
 /* ---------- données ---------- */
 const CACHE_KEY = 'carnet-cache-v1';
 function saveCache() {
-  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: S.syncedAt, role: S.role, favs: [...S.favs], recettes: [...S.recettes.values()], seances: [...S.seances.values()] })); } catch {}
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ at: S.syncedAt, role: S.role, favs: [...S.favs], recettes: [...S.recettes.values()], seances: [...S.seances.values()], personnes: S.personnes, periodes: [...S.periodes.values()], creneaux: S.creneaux })); } catch {}
 }
 function loadCache() {
   try {
     const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null'); if (!c) return false;
     S.recettes = new Map(c.recettes.map(r => [r.id, r])); S.seances = new Map(c.seances.map(s => [s.id, s]));
     S.favs = new Set(c.favs || []);
+    S.personnes = c.personnes || []; S.periodes = new Map((c.periodes || []).map(p => [p.id, p])); S.creneaux = c.creneaux || [];
     S.syncedAt = c.at; S.role = S.role || c.role; S.loaded = true; return true;
   } catch { return false; }
 }
@@ -94,17 +96,23 @@ async function refresh(silent) {
   if (!sb || !S.session) return;
   try {
     const email = S.session.user.email;
-    const [r, s, m, f] = await Promise.all([
+    const [r, s, m, f, pe, pr, cr] = await Promise.all([
       sb.from('recettes').select('*').order('titre'),
       sb.from('seances').select('*').order('date', { ascending: false }),
       sb.from('membres').select('role').ilike('email', email).maybeSingle(),
-      sb.from('favoris').select('recette_id')
+      sb.from('favoris').select('recette_id'),
+      sb.from('personnes').select('*').order('ordre'),
+      sb.from('periodes').select('*').order('debut'),
+      sb.from('creneaux').select('*, parts(*)').gte('date', isoDate(addDays(new Date(), -70))).order('date').order('ordre')
     ]);
     if (r.error) throw r.error; if (s.error) throw s.error;
     S.recettes = new Map(r.data.map(x => [x.id, x]));
     S.seances = new Map(s.data.map(x => [x.id, x]));
     S.role = m.data?.role || null;
     if (!f.error) S.favs = new Set(f.data.map(x => x.recette_id));
+    if (!pe.error) S.personnes = pe.data;
+    if (!pr.error) S.periodes = new Map(pr.data.map(x => [x.id, x]));
+    if (!cr.error) S.creneaux = cr.data;
     S.loaded = true; S.online = true; S.syncedAt = new Date().toISOString();
     saveCache();
   } catch (e) {
@@ -141,10 +149,13 @@ function parseRoute() {
   if (p[0] === 's' && p[1]) return { name: 'seance', id: p[1] };
   if (p[0] === 's') return { name: 'seances' };
   if (p[0] === 'compte') return { name: 'reglages' };
-  return { name: 'recettes' };
+  if (p[0] === 'recettes') return { name: 'recettes' };
+  if (p[0] === 'p' && p[1] === 'semaine') return { name: 'semaine', date: p[2] || null };
+  return { name: 'avenir' };
 }
 function go(hash) { if (location.hash === hash) { onRoute(); } else location.hash = hash; }
 function onRoute() {
+  S.prevHash = S.curHash; S.curHash = location.hash || '#/';
   S.route = parseRoute(); S.confirmDel = false;
   render(); window.scrollTo(0, 0);
 }
@@ -159,13 +170,14 @@ function render() {
   if (S.cook) { tab.hidden = true; app.innerHTML = viewCook(); return; }
   const r = S.route.name;
   tab.hidden = ['edit', 'newseance'].includes(r);
-  const cur = r === 'reglages' ? 'reglages' : (['seances', 'seance', 'newseance'].includes(r) ? 'seances' : 'recettes');
+  const cur = r === 'reglages' ? 'reglages' : ['avenir', 'semaine'].includes(r) ? 'planning' : (['seances', 'seance', 'newseance'].includes(r) ? 'seances' : 'recettes');
   tab.querySelectorAll('button').forEach(b => b.setAttribute('aria-current', b.dataset.tab === cur ? 'page' : 'false'));
   const html = {
+    avenir: viewAvenir, semaine: viewSemaine,
     recettes: viewList, recette: viewRecipe, edit: viewEdit,
     seances: viewSeances, seance: viewSeance, newseance: viewNewSeance, reglages: viewSettings
   }[r]();
-  app.innerHTML = `<div class="page ${tab.hidden ? 'notab' : ''}">${html}</div>`;
+  app.innerHTML = `<div class="page ${tab.hidden ? 'notab' : ''} ${r === 'semaine' ? 'wide' : ''}">${html}</div>`;
 }
 
 function viewNotConfigured() {
@@ -280,12 +292,13 @@ function backBtn(hash, label) { return `<button class="back" data-go="${hash}">$
 
 function viewRecipe() {
   const r = S.recettes.get(S.route.id);
-  if (!r) return `<div class="nav">${backBtn('#/', 'Recettes')}</div><div class="empty"><b>Recette introuvable</b></div>`;
+  if (!r) return `<div class="nav">${backBtn('#/recettes', 'Recettes')}</div><div class="empty"><b>Recette introuvable</b></div>`;
   const p = curPortions(r);
   const kv = [['Accompagnement', r.accompagnement], ['Protéines Papa', r.proteines], ['Conservation', r.conservation], ['Origine', r.source]].filter(x => x[1]);
   const aValider = (r.tags || []).some(t => norm(t) === 'a valider'), aTraduire = (r.tags || []).some(t => norm(t) === 'a traduire');
   const fav = S.favs.has(r.id);
-  return `<div class="nav">${backBtn('#/', 'Recettes')}<span class="navr"><button class="act star ${fav ? 'on' : ''}" data-act="fav" aria-pressed="${fav}" aria-label="${fav ? 'Retirer des favoris' : 'Ajouter aux favoris'}">${fav ? '★' : '☆'}</button>${isEditor() ? `<button class="act" data-go="#/r/${esc(encodeURIComponent(r.id))}/modifier">Modifier</button>` : ''}</span></div>
+  const from = /^#\/(p\/|s\/|$)|^$/.test(S.prevHash) ? S.prevHash || '#/' : null;
+  return `<div class="nav">${from ? backBtn(from, from.startsWith('#/s/') ? 'Séance' : 'Planning') : backBtn('#/recettes', 'Recettes')}<span class="navr"><button class="act star ${fav ? 'on' : ''}" data-act="fav" aria-pressed="${fav}" aria-label="${fav ? 'Retirer des favoris' : 'Ajouter aux favoris'}">${fav ? '★' : '☆'}</button>${isEditor() ? `<button class="act" data-go="#/r/${esc(encodeURIComponent(r.id))}/modifier">Modifier</button>` : ''}</span></div>
   <h1 class="large">${esc(r.titre)}</h1>
   <div class="facts"><span class="tag cat">${esc(r.categorie || 'Autre')}</span>${tagsHtml(r)}</div>
   ${aTraduire ? '<div class="banner"><b>Pas encore traduite.</b> Recette d\'origine en anglais, quantités non converties.</div>' : ''}
@@ -303,9 +316,9 @@ function viewRecipe() {
 
 function viewEdit() {
   const r = S.route.id ? S.recettes.get(S.route.id) : null;
-  if (!isEditor()) return `<div class="nav">${backBtn('#/', 'Recettes')}</div><div class="empty"><b>Lecture seule</b><span>Votre compte ne permet pas de modifier les recettes.</span></div>`;
+  if (!isEditor()) return `<div class="nav">${backBtn('#/recettes', 'Recettes')}</div><div class="empty"><b>Lecture seule</b><span>Votre compte ne permet pas de modifier les recettes.</span></div>`;
   const d = r || { titre: '', categorie: 'Plat batch', portions: 6, tags: [], congelable: true, ingredients: [], etapes: [], notes: '', accompagnement: '', proteines: '', conservation: '' };
-  const back = r ? '#/r/' + encodeURIComponent(r.id) : '#/';
+  const back = r ? '#/r/' + encodeURIComponent(r.id) : '#/recettes';
   return `<form id="edform">
   <div class="nav"><button type="button" class="act" data-go="${back}">Annuler</button><button type="submit" class="act" id="f-save" style="font-weight:700">OK</button></div>
   <h1 class="large">${r ? 'Modifier' : 'Nouvelle recette'}</h1>
@@ -392,6 +405,7 @@ function viewSeance() {
   }).join('')}</div>
   <div class="btns"><button class="btn" data-act="copy-sea">Copier la liste pour Todoist</button></div>
   <p class="hint">Les ingrédients cochés (déjà en stock) ne sont pas copiés.</p>
+  ${seaRepartition(s)}
   <div class="section-h">Déroulé</div>${stepsHtml(steps, whoLabel(s))}
   ${s.notes ? `<div class="section-h">Notes</div><div class="note">${esc(s.notes)}</div>` : ''}
   <div class="section-h">Fiches</div><div class="group">
@@ -422,7 +436,7 @@ function viewSettings() {
   <div class="group kv">
     <div class="cell"><span class="k">Connecté</span><span class="v">${esc(email)}</span></div>
     <div class="cell"><span class="k">Accès</span><span class="v">${S.role === 'editeur' ? 'Lecture et modification' : S.role === 'lecteur' ? 'Lecture seule' : 'Aucun accès aux recettes'}</span></div>
-    <div class="cell"><span class="k">Recettes</span><span class="v num">${S.recettes.size} · ${S.seances.size} séances</span></div>
+    <div class="cell"><span class="k">Recettes</span><span class="v num">${S.recettes.size} · ${S.seances.size} séances · ${S.creneaux.length} repas planifiés</span></div>
     <div class="cell"><span class="k">Synchronisé</span><span class="v">${S.syncedAt ? esc(fmtDate(S.syncedAt, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) : '—'}</span></div>
   </div>
   <div class="btns">
@@ -431,6 +445,168 @@ function viewSettings() {
     <button class="btn dng" data-act="logout">Se déconnecter</button>
   </div>
   ${S.role ? '' : '<p class="hint">Cette adresse n\'est pas encore dans la liste des membres de la base. Ajoutez-la dans la table « membres » sur Supabase.</p>'}`;
+}
+
+/* ---------- planning de la période ---------- */
+const REPAS = [['petit_dej', 'Petit-déj'], ['midi', 'Midi'], ['soir', 'Soir']];
+const REPAS_L = Object.fromEntries(REPAS);
+const LIEU_L = { maison: '', lunch_box: 'Lunch box', cantine: 'Cantine', nounou: 'Nounou', resto: 'Resto' };
+const PROV = {
+  cuisine_jour: ['Cuisiné le jour', 'cuis'], frigo: ['Frigo', 'frg'],
+  congelateur: ['Congélateur', 'frz'], tout_pret: ['Tout prêt', 'prt']
+};
+const pad = n => String(n).padStart(2, '0');
+function isoDate(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+function parseDate(s) { const [y, m, d] = String(s).split('-').map(Number); return new Date(y, m - 1, d); }
+function addDays(d, n) { const x = new Date(d.getFullYear(), d.getMonth(), d.getDate()); x.setDate(x.getDate() + n); return x; }
+// La semaine du foyer va du mercredi (courses) au mardi.
+function weekStart(d) { return addDays(d, -((d.getDay() - 3 + 7) % 7)); }
+const todayIso = () => isoDate(new Date());
+const dayLabel = (iso, o) => fmtDate(parseDate(iso), o || { weekday: 'long', day: 'numeric', month: 'long' });
+const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+const pct = v => Math.round(v * 100) + ' %';
+const fmtR = v => String(Math.round(v * 100) / 100).replace('.', ',');
+
+function personne(id) { return S.personnes.find(p => p.id === id) || { id, nom: cap(id), ratio_plat: 1, ratio_feculent: 1, ordre: 9 }; }
+function periodeOf(iso) { return [...S.periodes.values()].find(p => iso >= p.debut && iso <= p.fin) || null; }
+function creneauxDu(iso) { return S.creneaux.filter(c => c.date === iso).sort((a, b) => REPAS.findIndex(r => r[0] === a.repas) - REPAS.findIndex(r => r[0] === b.repas) || a.ordre - b.ordre); }
+function partsTriees(c) { return (c.parts || []).slice().sort((a, b) => personne(a.personne_id).ordre - personne(b.personne_id).ordre); }
+function crTitre(c) { const r = c.recette_id ? S.recettes.get(c.recette_id) : null; return r ? r.titre : (c.libelle || '?'); }
+
+// Groupes de partage : les parts « partagée » d'un créneau forment une seule boîte.
+function boites(c) {
+  const ps = partsTriees(c), out = [], shared = ps.filter(p => p.boite === 'partagee');
+  ps.forEach(p => { if (p.boite !== 'partagee') out.push([p]); });
+  if (shared.length) out.splice(Math.min(...shared.map(p => ps.indexOf(p))), 0, shared);
+  return out;
+}
+const ratioPlat = grp => grp.reduce((s, p) => s + Number(personne(p.personne_id).ratio_plat), 0);
+const nomsGrp = grp => grp.map(p => personne(p.personne_id).nom).join(' + ');
+
+// Répartition du plat sur la table, en % de ce qui est servi à ce repas.
+function repartitionHtml(c) {
+  const grps = boites(c); if (!grps.length) return '';
+  const tot = grps.reduce((s, g) => s + ratioPlat(g), 0);
+  if (c.repas === 'petit_dej' || grps.length === 1 && grps[0].length === 1) {
+    return `<span class="who-line">${grps.map(g => esc(nomsGrp(g)) + lieuTag(g)).join(' · ')}</span>`;
+  }
+  return `<span class="who-line">${grps.map(g => `<span class="pp">${esc(nomsGrp(g))} <b class="num">${pct(ratioPlat(g) / tot)}</b>${lieuTag(g)}</span>`).join('')}</span>`;
+}
+function lieuTag(grp) {
+  const l = LIEU_L[grp[0].lieu]; return l ? ` <span class="tag lieu">${esc(l)}</span>` : '';
+}
+function feculentHtml(c, per) {
+  if (c.repas === 'petit_dej' || !c.accompagnement) return '';
+  const base = Number(per?.feculent_base_g || 100), ps = partsTriees(c);
+  if (!ps.length) return '';
+  const qs = ps.map(p => Math.round(base * Number(personne(p.personne_id).ratio_feculent)));
+  const tot = qs.reduce((a, b) => a + b, 0);
+  return `<span class="fec">${esc(cap(c.accompagnement))} : cuire <b class="num">${tot} g</b> cru <span class="dim">(${ps.map((p, i) => esc(personne(p.personne_id).nom) + ' ' + qs[i]).join(' · ')})</span></span>`;
+}
+function creneauHtml(c, per) {
+  const r = c.recette_id ? S.recettes.get(c.recette_id) : null;
+  const prov = PROV[c.provenance];
+  const tags = (prov ? `<span class="tag ${prov[1]}">${prov[0]}</span>` : '') + (c.shaker ? '<span class="tag shk">Shaker</span>' : '');
+  const inner = `<span class="main">
+      <span class="t">${esc(crTitre(c))}${c.accompagnement && c.repas !== 'petit_dej' ? `<span class="acc"> · ${esc(c.accompagnement)}</span>` : ''}</span>
+      ${tags ? `<span class="m">${tags}</span>` : ''}
+      ${repartitionHtml(c)}
+      ${feculentHtml(c, per)}
+      ${c.notes ? `<span class="cnote">${esc(c.notes)}</span>` : ''}
+    </span>`;
+  return r ? `<button class="cell meal" data-go="#/r/${esc(encodeURIComponent(r.id))}">${inner}${ICON.chev}</button>`
+           : `<div class="cell meal">${inner}</div>`;
+}
+function periodeBanner(per) {
+  if (!per) return '';
+  const nbSem = Math.round((parseDate(per.fin) - parseDate(per.debut)) / 864e5 + 1) / 7;
+  return `<p class="sub">${esc(per.titre)} · ${esc(dayLabel(per.debut, { day: 'numeric', month: 'short' }))} → ${esc(dayLabel(per.fin, { day: 'numeric', month: 'short' }))} · ${fmtR(nbSem)} semaines${per.statut !== 'valide' ? ' · <span class="tag chk">Brouillon</span>' : ''}</p>`;
+}
+function viewAvenir() {
+  const t = todayIso(), days = [...Array(7)].map((_, i) => isoDate(addDays(new Date(), i)));
+  const per = periodeOf(t) || [...S.periodes.values()].find(p => p.debut > t);
+  const anyPlan = days.some(d => creneauxDu(d).length);
+  const nav = `<div class="nav"><span></span><button class="act" data-go="#/p/semaine/${isoDate(weekStart(new Date()))}">Semaine</button></div>`;
+  if (!S.loaded) return nav + '<h1 class="large">À venir</h1><div class="empty">Chargement…</div>';
+  if (!anyPlan) {
+    const next = [...S.periodes.values()].filter(p => p.debut > t).sort((a, b) => a.debut.localeCompare(b.debut))[0];
+    return `${nav}<h1 class="large">À venir</h1>${offlineBanner()}
+      <div class="empty"><b>Rien de planifié cette semaine</b><span>${next ? 'Prochaine période : ' + esc(next.titre) + ', à partir du ' + esc(dayLabel(next.debut)) + '.' : 'Le menu de la période apparaîtra ici une fois saisi par Claude.'}</span></div>
+      <div class="btns"><button class="btn" data-go="#/recettes">Voir les recettes</button></div>`;
+  }
+  return `${nav}<h1 class="large">À venir</h1>${periodeBanner(per)}${offlineBanner()}` + days.map((d, i) => {
+    const cs = creneauxDu(d); if (!cs.length) return '';
+    const p = periodeOf(d);
+    const head = i === 0 ? "Aujourd'hui · " + dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' }) : i === 1 ? 'Demain · ' + dayLabel(d, { weekday: 'short', day: 'numeric', month: 'short' }) : cap(dayLabel(d));
+    const sea = [...S.seances.values()].filter(s => s.date === d);
+    return `<section class="day ${i === 0 ? 'today' : ''}"><div class="section-h">${esc(head)}</div>
+      ${sea.map(s => `<button class="cell batch" data-go="#/s/${esc(encodeURIComponent(s.id))}"><span class="main"><span class="t">Batch · ${esc(seaTitle(s).replace(/^Batch [^·]*·\s*/, ''))}</span>${s.duree ? `<span class="cnote">${esc(s.duree)}</span>` : ''}</span>${ICON.chev}</button>`).join('')}
+      ${REPAS.map(([k, l]) => { const rc = cs.filter(c => c.repas === k); return rc.length ? `<div class="repas-h">${l}</div><div class="group">${rc.map(c => creneauHtml(c, p)).join('')}</div>` : ''; }).join('')}
+    </section>`;
+  }).join('');
+}
+
+function viewSemaine() {
+  const start = S.route.date ? weekStart(parseDate(S.route.date)) : weekStart(new Date());
+  const days = [...Array(7)].map((_, i) => isoDate(addDays(start, i)));
+  const per = periodeOf(days[0]) || periodeOf(days[6]);
+  const prev = isoDate(addDays(start, -7)), next = isoDate(addDays(start, 7)), t = todayIso();
+  const pers = S.personnes.length ? S.personnes : [];
+  const cellFor = (d, rep, pid) => {
+    const out = creneauxDu(d).filter(c => c.repas === rep && (c.parts || []).some(p => p.personne_id === pid));
+    return out.map(c => {
+      const part = c.parts.find(p => p.personne_id === pid), r = c.recette_id ? S.recettes.get(c.recette_id) : null;
+      const grp = boites(c).find(g => g.includes(part)), tot = boites(c).reduce((s, g) => s + ratioPlat(g), 0);
+      const share = c.repas !== 'petit_dej' && boites(c).length > 1 ? `<span class="sp num">${pct(ratioPlat(grp) / tot)}${grp.length > 1 ? ' ' + esc(nomsGrp(grp)) : ''}</span>` : '';
+      const prov = PROV[c.provenance], l = LIEU_L[part.lieu];
+      const label = `${esc(crTitre(c))}${c.accompagnement && c.repas !== 'petit_dej' ? `<span class="acc"> · ${esc(c.accompagnement)}</span>` : ''}`;
+      return `<div class="wk-item">${r ? `<a href="#/r/${esc(encodeURIComponent(r.id))}">${label}</a>` : `<span>${label}</span>`}
+        <span class="wk-m">${l ? `<span class="tag lieu">${esc(l)}</span>` : ''}${prov ? `<span class="tag ${prov[1]}">${prov[0]}</span>` : ''}${c.shaker && pid === 'papa' ? '<span class="tag shk">Shaker</span>' : ''}${share}</span></div>`;
+    }).join('') || '<span class="wk-none">—</span>';
+  };
+  const rows = REPAS.map(([k, l]) => pers.map((p, i) => `<tr class="${i === 0 ? 'first' : ''}">${i === 0 ? `<th class="rep" rowspan="${pers.length}">${l}</th>` : ''}<th class="who">${esc(p.nom)}</th>${days.map(d => `<td class="${d === t ? 'today' : ''}">${cellFor(d, k, p.id)}</td>`).join('')}</tr>`).join('')).join('');
+  const seaRow = days.map(d => { const ss = [...S.seances.values()].filter(s => s.date === d); return `<td class="${d === t ? 'today' : ''}">${ss.map(s => `<a class="wk-batch" href="#/s/${esc(encodeURIComponent(s.id))}">Batch</a>`).join('')}</td>`; }).join('');
+  const fecRow = days.map(d => { const items = creneauxDu(d).filter(c => c.accompagnement && c.repas !== 'petit_dej').map(c => {
+      const per2 = periodeOf(d), base = Number(per2?.feculent_base_g || 100), tot = (c.parts || []).reduce((s, p) => s + Math.round(base * Number(personne(p.personne_id).ratio_feculent)), 0);
+      return `<span class="fec-s">${REPAS_L[c.repas]} : ${esc(c.accompagnement)} <b class="num">${tot} g</b></span>`; });
+    return `<td class="${d === t ? 'today' : ''}">${items.join('') || '<span class="wk-none">—</span>'}</td>`; }).join('');
+  const empty = !days.some(d => creneauxDu(d).length);
+  return `<div class="nav">${backBtn('#/', 'À venir')}<span class="navr"><button class="act" data-go="#/p/semaine/${prev}" aria-label="Semaine précédente">‹ Préc.</button><button class="act" data-go="#/p/semaine/${next}" aria-label="Semaine suivante">Suiv. ›</button></span></div>
+  <h1 class="large">Semaine du ${esc(dayLabel(days[0], { weekday: 'short', day: 'numeric', month: 'short' }))}</h1>
+  ${periodeBanner(per)}${offlineBanner()}
+  ${per?.notes && isEditor() ? `<div class="note small">${esc(per.notes)}</div>` : ''}
+  ${empty ? '<div class="empty"><b>Rien de planifié</b><span>Aucun repas saisi pour cette semaine.</span></div>' : `
+  <div class="wk-wrap"><table class="wk">
+    <colgroup><col class="c-rep"><col class="c-who">${days.map(() => '<col>').join('')}</colgroup>
+    <thead><tr><th></th><th></th>${days.map(d => `<th class="${d === t ? 'today' : ''}">${esc(cap(dayLabel(d, { weekday: 'short' })))}<span class="dn num">${esc(dayLabel(d, { day: 'numeric', month: 'numeric' }))}</span></th>`).join('')}</tr></thead>
+    <tbody>
+      <tr class="first"><th class="rep" colspan="2">Batch</th>${seaRow}</tr>
+      ${rows}
+      <tr class="first"><th class="rep" colspan="2">Féculent cru</th>${fecRow}</tr>
+    </tbody></table></div>
+  <p class="hint">Pourcentages : part du plat servie à chacun sur ce repas (Papa ${fmtR(personne('papa').ratio_plat)} · Maman ${fmtR(personne('maman').ratio_plat)} · Fils ${fmtR(personne('fils').ratio_plat)}).</p>`}`;
+}
+
+// Séance : où part chaque plat, en % du plat entier (boîtes et repas).
+function seaRepartition(s) {
+  const plats = seaRecipes(s).filter(Boolean); if (!plats.length || !S.creneaux.length) return '';
+  const blocs = plats.map(r => {
+    const cs = S.creneaux.filter(c => c.recette_id === r.id && (c.seance_id === s.id || (!c.seance_id && s.date && c.date >= s.date)))
+      .sort((a, b) => a.date.localeCompare(b.date) || REPAS.findIndex(x => x[0] === a.repas) - REPAS.findIndex(x => x[0] === b.repas));
+    if (!cs.length) return '';
+    const portions = Number(r.portions) || 6;
+    let used = 0;
+    const lines = cs.flatMap(c => boites(c).map(g => {
+      const part = ratioPlat(g) / portions; used += part;
+      const lb = g[0].lieu === 'lunch_box' || g[0].lieu === 'nounou';
+      return `<div class="cell rep-l"><span class="main"><span class="t">${lb ? 'Boîte ' : ''}${esc(nomsGrp(g))}</span><span class="cnote">${esc(cap(dayLabel(c.date, { weekday: 'short', day: 'numeric' })))} ${REPAS_L[c.repas].toLowerCase()}${PROV[c.provenance] ? ' · ' + PROV[c.provenance][0].toLowerCase() : ''}</span></span><span class="r num">${pct(part)}</span></div>`;
+    }));
+    const reste = 1 - used;
+    const fin = reste > 0.005 ? `<div class="cell rep-l rest"><span class="main"><span class="t">Reste non planifié</span><span class="cnote">→ congélateur</span></span><span class="r num">${pct(reste)}</span></div>`
+      : reste < -0.005 ? `<div class="cell rep-l over"><span class="main"><span class="t">Dépasse le plat</span><span class="cnote">${fmtR(used * portions)} portions prévues pour ${portions}</span></span><span class="r num">+${pct(-reste)}</span></div>` : '';
+    return `<div class="grp">${esc(r.titre)} · ${portions} portions</div><div class="group">${lines.join('')}${fin}</div>`;
+  }).join('');
+  return blocs ? `<div class="section-h">Répartition du plat cuit</div>${blocs}<p class="hint">Pesez le plat cuit entier et appliquez les pourcentages. Une portion = la part de Maman.</p>` : '';
 }
 
 /* ---------- mode cuisine ---------- */
@@ -495,7 +671,7 @@ function currentSteps() {
 document.addEventListener('click', async e => {
   const b = e.target.closest('button'); if (!b) return;
   const d = b.dataset;
-  if (d.tab) return go({ recettes: '#/', seances: '#/s', reglages: '#/compte' }[d.tab]);
+  if (d.tab) return go({ planning: '#/', recettes: '#/recettes', seances: '#/s', reglages: '#/compte' }[d.tab]);
   if (d.go) { e.preventDefault(); return go(d.go); }
   if (d.cat) { S.cat = d.cat; return render(); }
   if (d.tag) { S.tag = S.tag === d.tag ? null : d.tag; return render(); }
@@ -518,7 +694,7 @@ document.addEventListener('click', async e => {
       return copyList(mergedIngs(s).map((i, k) => chk[k] ? null : { n: i.n, q: i.hasQ ? i.q : null, u: i.u }).filter(Boolean)); }
     case 'del': S.confirmDel = true; return render();
     case 'del-no': S.confirmDel = false; return render();
-    case 'del-yes': try { await deleteRow('recettes', S.route.id); S.recettes.delete(S.route.id); saveCache(); toast('Recette supprimée'); go('#/'); } catch (err) { writeFailed(err); } return;
+    case 'del-yes': try { await deleteRow('recettes', S.route.id); S.recettes.delete(S.route.id); saveCache(); toast('Recette supprimée'); go('#/recettes'); } catch (err) { writeFailed(err); } return;
     case 'seadel-yes': try { await deleteRow('seances', S.route.id); S.seances.delete(S.route.id); saveCache(); toast('Séance supprimée'); go('#/s'); } catch (err) { writeFailed(err); } return;
     case 'sync': await refresh(); toast(S.online ? 'Recettes à jour' : 'Toujours hors connexion'); return;
     case 'export': return exportAll();
@@ -609,7 +785,7 @@ async function copyList(items) {
   toast(ok ? items.length + ' article' + (items.length > 1 ? 's' : '') + ' copié' + (items.length > 1 ? 's' : '') + ' : collez dans Todoist' : 'Copie impossible sur cet appareil');
 }
 function exportAll() {
-  const data = JSON.stringify({ exporte: new Date().toISOString(), recettes: recList(), seances: [...S.seances.values()] }, null, 2);
+  const data = JSON.stringify({ exporte: new Date().toISOString(), recettes: recList(), seances: [...S.seances.values()], periodes: [...S.periodes.values()], creneaux: S.creneaux }, null, 2);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([data], { type: 'application/json' }));
   a.download = 'carnet-repas-' + new Date().toISOString().slice(0, 10) + '.json';
@@ -621,6 +797,7 @@ function exportAll() {
 window.addEventListener('online', () => refresh(true));
 window.addEventListener('offline', () => { S.online = false; if (!S.cook && !isTyping()) render(); });
 (async () => {
+  S.curHash = location.hash || '#/';
   S.route = parseRoute();
   if (!sb) return render();
   loadCache();
