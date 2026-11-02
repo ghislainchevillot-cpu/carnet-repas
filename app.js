@@ -151,6 +151,7 @@ function parseRoute() {
   if (p[0] === 'compte') return { name: 'reglages' };
   if (p[0] === 'recettes') return { name: 'recettes' };
   if (p[0] === 'p' && p[1] === 'semaine') return { name: 'semaine', date: p[2] || null };
+  if (p[0] === 'p' && p[1] === 'imprimer') return { name: 'imprimer', date: p[2] || null };
   return { name: 'avenir' };
 }
 function go(hash) { if (location.hash === hash) { onRoute(); } else location.hash = hash; }
@@ -169,15 +170,15 @@ function render() {
   if (!S.session) { tab.hidden = true; app.innerHTML = viewLogin(); return; }
   if (S.cook) { tab.hidden = true; app.innerHTML = viewCook(); return; }
   const r = S.route.name;
-  tab.hidden = ['edit', 'newseance'].includes(r);
-  const cur = r === 'reglages' ? 'reglages' : ['avenir', 'semaine'].includes(r) ? 'planning' : (['seances', 'seance', 'newseance'].includes(r) ? 'seances' : 'recettes');
+  tab.hidden = ['edit', 'newseance', 'imprimer'].includes(r);
+  const cur = r === 'reglages' ? 'reglages' : ['avenir', 'semaine', 'imprimer'].includes(r) ? 'planning' : (['seances', 'seance', 'newseance'].includes(r) ? 'seances' : 'recettes');
   tab.querySelectorAll('button').forEach(b => b.setAttribute('aria-current', b.dataset.tab === cur ? 'page' : 'false'));
   const html = {
-    avenir: viewAvenir, semaine: viewSemaine,
+    avenir: viewAvenir, semaine: viewSemaine, imprimer: viewImprimer,
     recettes: viewList, recette: viewRecipe, edit: viewEdit,
     seances: viewSeances, seance: viewSeance, newseance: viewNewSeance, reglages: viewSettings
   }[r]();
-  app.innerHTML = `<div class="page ${tab.hidden ? 'notab' : ''} ${r === 'semaine' ? 'wide' : ''}">${html}</div>`;
+  app.innerHTML = `<div class="page ${tab.hidden ? 'notab' : ''} ${r === 'semaine' ? 'wide' : ''} ${r === 'imprimer' ? 'wide printable' : ''}">${html}</div>`;
 }
 
 function viewNotConfigured() {
@@ -510,8 +511,42 @@ function creneauHtml(c, per) {
       ${feculentHtml(c, per)}
       ${c.notes ? `<span class="cnote">${esc(c.notes)}</span>` : ''}
     </span>`;
-  return r ? `<button class="cell meal" data-go="#/r/${esc(encodeURIComponent(r.id))}">${inner}${ICON.chev}</button>`
+  const cell = r ? `<button class="cell meal" data-go="#/r/${esc(encodeURIComponent(r.id))}">${inner}${ICON.chev}</button>`
            : `<div class="cell meal">${inner}</div>`;
+  return cell + (c.date <= todayIso() ? rateHtml(c) : '');
+}
+
+/* ---------- notes des repas (pour le bilan) ---------- */
+const notable = c => c.libelle !== 'Cantine' && !(c.repas === 'petit_dej' && c.provenance === 'tout_pret' && !c.recette_id && /tartine/i.test(c.libelle || ''));
+function rateHtml(c, compact) {
+  if (!isEditor() || !notable(c)) return '';
+  const nb = [1, 2, 3, 4, 5].map(n => `<button class="rn ${c.note === n ? 'on' : ''}" data-note="${c.id}:${n}" aria-label="Note ${n} sur 5" aria-pressed="${c.note === n}">${n}</button>`).join('');
+  if (compact) return `<span class="wk-rate">${nb}<button class="rc ${c.commentaire ? 'on' : ''}" data-com="${c.id}" aria-label="Commentaire">${c.commentaire ? '✎✓' : '✎'}</button></span>${c.commentaire ? `<span class="rcom">${esc(c.commentaire)}</span>` : ''}`;
+  return `<div class="rate">${nb}<button class="rc" data-com="${c.id}">${c.commentaire ? 'Modifier le commentaire' : 'Commenter'}</button></div>${c.commentaire ? `<div class="rcom">${esc(c.commentaire)}</div>` : ''}`;
+}
+async function rateCreneau(id, patch) {
+  const c = S.creneaux.find(x => String(x.id) === String(id)); if (!c) return;
+  const old = { note: c.note ?? null, commentaire: c.commentaire || '' };
+  Object.assign(c, patch); render();
+  try { const { error } = await sb.from('creneaux').update(patch).eq('id', c.id); if (error) throw error; saveCache(); toast(patch.note !== undefined ? (patch.note ? 'Note enregistrée' : 'Note retirée') : 'Commentaire enregistré'); }
+  catch (err) { Object.assign(c, old); render(); writeFailed(err); }
+}
+function viewImprimer() {
+  const start = S.route.date ? weekStart(parseDate(S.route.date)) : weekStart(new Date());
+  const days = [...Array(7)].map((_, i) => isoDate(addDays(start, i)));
+  const nb = c => [1, 2, 3, 4, 5].map(n => c.note === n ? `<b>${n}</b>` : `<span>${n}</span>`).join('');
+  const body = days.map(d => {
+    const cs = creneauxDu(d).filter(notable); if (!cs.length) return '';
+    return cs.map((c, i) => `<tr class="${i === 0 ? 'dstart' : ''}">${i === 0 ? `<th class="day" rowspan="${cs.length}">${esc(cap(dayLabel(d, { weekday: 'short', day: 'numeric', month: 'numeric' })))}</th>` : ''}
+      <td class="rp">${REPAS_L[c.repas]}</td>
+      <td>${esc(crTitre(c))}${c.accompagnement && c.repas !== 'petit_dej' ? ` <span class="acc">· ${esc(c.accompagnement)}</span>` : ''}<span class="qui">${esc(partsTriees(c).map(p => personne(p.personne_id).nom).join(', '))}</span></td>
+      <td class="nb">${nb(c)}</td><td class="com">${esc(c.commentaire || '')}</td></tr>`).join('');
+  }).join('');
+  return `<div class="nav noprint">${backBtn('#/p/semaine/' + isoDate(start), 'Semaine')}<button class="act" data-act="print">Imprimer</button></div>
+  <h1 class="prt-h">Repas · semaine du ${esc(dayLabel(days[0], { weekday: 'short', day: 'numeric', month: 'long' }))} au ${esc(dayLabel(days[6], { weekday: 'short', day: 'numeric', month: 'long' }))}</h1>
+  <p class="prt-sub">Entourez une note de 1 (à ne plus faire) à 5 (à refaire tel quel). Commentaires : goût, quantité, qui n'a pas aimé, cuisson.</p>
+  ${body ? `<table class="prt"><colgroup><col class="c-day"><col class="c-rp"><col><col class="c-nb"><col class="c-com"></colgroup>
+    <thead><tr><th>Jour</th><th>Repas</th><th>Plat</th><th>Note</th><th>Commentaire</th></tr></thead><tbody>${body}</tbody></table>` : '<div class="empty"><b>Rien de planifié</b></div>'}`;
 }
 function periodeBanner(per) {
   if (!per) return '';
@@ -555,9 +590,10 @@ function viewSemaine() {
       const grp = boites(c).find(g => g.includes(part));
       const share = grp.length > 1 ? `<span class="sp">${esc(nomsGrp(grp))}</span>` : '';
       const prov = PROV[c.provenance], l = LIEU_L[part.lieu];
+      const rate = partsTriees(c)[0]?.personne_id === pid && c.date <= todayIso() ? rateHtml(c, true) : '';
       const label = `${esc(crTitre(c))}${c.accompagnement && c.repas !== 'petit_dej' ? `<span class="acc"> · ${esc(c.accompagnement)}</span>` : ''}`;
       return `<div class="wk-item">${r ? `<a href="#/r/${esc(encodeURIComponent(r.id))}">${label}</a>` : `<span>${label}</span>`}
-        <span class="wk-m">${l ? `<span class="tag lieu">${esc(l)}</span>` : ''}${prov ? `<span class="tag ${prov[1]}">${prov[0]}</span>` : ''}${c.shaker && pid === 'papa' ? '<span class="tag shk">Shaker</span>' : ''}${share}</span></div>`;
+        <span class="wk-m">${l ? `<span class="tag lieu">${esc(l)}</span>` : ''}${prov ? `<span class="tag ${prov[1]}">${prov[0]}</span>` : ''}${c.shaker && pid === 'papa' ? '<span class="tag shk">Shaker</span>' : ''}${share}</span>${rate}</div>`;
     }).join('') || '<span class="wk-none">—</span>';
   };
   const rows = REPAS.map(([k, l]) => pers.map((p, i) => `<tr class="${i === 0 ? 'first' : ''}">${i === 0 ? `<th class="rep" rowspan="${pers.length}">${l}</th>` : ''}<th class="who">${esc(p.nom)}</th>${days.map(d => `<td class="${d === t ? 'today' : ''}">${cellFor(d, k, p.id)}</td>`).join('')}</tr>`).join('')).join('');
@@ -567,7 +603,7 @@ function viewSemaine() {
       return `<span class="fec-s">${REPAS_L[c.repas]} : ${esc(c.accompagnement)} <b class="num">${tot} g</b></span>`; });
     return `<td class="${d === t ? 'today' : ''}">${items.join('') || '<span class="wk-none">—</span>'}</td>`; }).join('');
   const empty = !days.some(d => creneauxDu(d).length);
-  return `<div class="nav">${backBtn('#/', 'À venir')}<span class="navr"><button class="act" data-go="#/p/semaine/${prev}" aria-label="Semaine précédente">‹ Préc.</button><button class="act" data-go="#/p/semaine/${next}" aria-label="Semaine suivante">Suiv. ›</button></span></div>
+  return `<div class="nav">${backBtn('#/', 'À venir')}<span class="navr"><button class="act" data-go="#/p/semaine/${prev}" aria-label="Semaine précédente">‹ Préc.</button><button class="act" data-go="#/p/semaine/${next}" aria-label="Semaine suivante">Suiv. ›</button><button class="act" data-go="#/p/imprimer/${isoDate(start)}">Imprimer</button></span></div>
   <h1 class="large">Semaine du ${esc(dayLabel(days[0], { weekday: 'short', day: 'numeric', month: 'short' }))}</h1>
   ${periodeBanner(per)}${offlineBanner()}
   ${per?.notes && isEditor() ? `<div class="note small">${esc(per.notes)}</div>` : ''}
@@ -672,6 +708,8 @@ document.addEventListener('click', async e => {
   if (d.tag) { S.tag = S.tag === d.tag ? null : d.tag; return render(); }
   if (d.por) { const r = S.recettes.get(d.r || S.route.id); if (r) { S.portions[r.id] = Math.max(1, curPortions(r) + Number(d.por)); render(); } return; }
   if (d.timer != null) { const st = currentSteps()[+d.timer]; if (st) addTimer(st); return; }
+  if (d.note) { const [id, n] = d.note.split(':'); const c = S.creneaux.find(x => String(x.id) === id); return rateCreneau(id, { note: c && c.note === +n ? null : +n }); }
+  if (d.com) { const c = S.creneaux.find(x => String(x.id) === d.com); if (!c) return; const t = prompt('Commentaire : ' + crTitre(c), c.commentaire || ''); if (t === null) return; return rateCreneau(d.com, { commentaire: t.trim() }); }
   if (d.ctimer != null) { addTimer(S.cook.steps[+d.ctimer]); return; }
   if (d.tpause) { const t = S.timers.find(x => x.id === d.tpause); if (t) { if (t.paused) { t.end = Date.now() + t.left; t.paused = false; } else t.paused = true; tick(); } return; }
   if (d.tstop) { const t = S.timers.find(x => x.id === d.tstop); if (t) clearInterval(t.rep); S.timers = S.timers.filter(x => x.id !== d.tstop); tick(); return; }
@@ -693,6 +731,7 @@ document.addEventListener('click', async e => {
     case 'seadel-yes': try { await deleteRow('seances', S.route.id); S.seances.delete(S.route.id); saveCache(); toast('Séance supprimée'); go('#/s'); } catch (err) { writeFailed(err); } return;
     case 'sync': await refresh(); toast(S.online ? 'Recettes à jour' : 'Toujours hors connexion'); return;
     case 'export': return exportAll();
+    case 'print': return window.print();
     case 'logout': await sb.auth.signOut(); try { localStorage.removeItem(CACHE_KEY); } catch {} S.recettes.clear(); S.seances.clear(); S.loaded = false; S.role = null; return;
   }
 });

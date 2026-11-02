@@ -232,3 +232,40 @@ body.cooking .dock{bottom:calc(var(--sb) + 92px)}
 .wk-none{color:var(--faint)}
 .wk-batch{display:inline-block;font-size:11.5px;font-weight:700!important;color:var(--saffron)!important;background:var(--saffron-soft);border-radius:6px;padding:1px 6px}
 .fec-s{display:block;color:var(--saffron);font-size:12px}
+
+/* notes des repas */
+.rate{display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 16px 10px;border-top:1px solid var(--sep)}
+.rn{width:32px;height:32px;border-radius:50%;background:var(--fill);color:var(--muted);font-weight:600;font-size:15px}
+.rn.on{background:var(--accent);color:var(--accent-ink)}
+.rate .rc{margin-left:auto;font-size:14px;font-weight:500;color:var(--accent);padding:6px 2px}
+.rcom{display:block;padding:0 16px 10px;font-size:14px;color:var(--muted);font-style:italic}
+.wk-rate{display:flex;gap:2px;margin-top:4px;flex-wrap:wrap}
+.wk-rate .rn{width:20px;height:20px;font-size:11px}
+.wk-rate .rc{font-size:12px;color:var(--accent);padding:0 3px}
+.wk-item .rcom{padding:2px 0 0;font-size:12px}
+/* feuille à imprimer */
+.prt-h{font-size:20px;margin:6px 0 4px}
+.prt-sub{color:var(--muted);font-size:13px;margin:0 0 10px}
+.prt{width:100%;border-collapse:collapse;font-size:13px;background:var(--card)}
+.prt th,.prt td{border:1px solid var(--sep);padding:6px;vertical-align:top;text-align:left}
+.prt thead th{font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted)}
+.prt .c-day{width:11%}.prt .c-rp{width:8%}.prt .c-nb{width:16%}.prt .c-com{width:30%}
+.prt .day{font-weight:700}
+.prt .rp{color:var(--muted);font-size:12px}
+.prt .acc{color:var(--muted)}
+.prt .qui{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+.prt .nb{white-space:nowrap}
+.prt .nb span,.prt .nb b{display:inline-grid;place-content:center;width:20px;height:20px;margin-right:3px;border:1px solid var(--muted);border-radius:50%;font-size:11px;font-weight:500}
+.prt .nb b{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.prt tr.dstart th,.prt tr.dstart td{border-top:2px solid var(--muted)}
+@media print{
+  @page{size:A4 portrait;margin:9mm}
+  :root{--bg:#fff;--card:#fff;--fg:#000;--muted:#444;--sep:#999}
+  body{background:#fff!important;color:#000}
+  #tabbar,.noprint,.toast{display:none!important}
+  .page{padding:0!important;max-width:none!important}
+  .prt{font-size:11px}
+  .prt td,.prt th{padding:4px 5px}
+  .prt td.com{height:26px}
+  .prt tr{break-inside:avoid}
+}
