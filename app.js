@@ -483,14 +483,10 @@ function boites(c) {
 const ratioPlat = grp => grp.reduce((s, p) => s + Number(personne(p.personne_id).ratio_plat), 0);
 const nomsGrp = grp => grp.map(p => personne(p.personne_id).nom).join(' + ');
 
-// Répartition du plat sur la table, en % de ce qui est servi à ce repas.
+// Qui mange ce repas, et où. Les pourcentages ne sont affichés que sur la séance (portionnement au batch).
 function repartitionHtml(c) {
   const grps = boites(c); if (!grps.length) return '';
-  const tot = grps.reduce((s, g) => s + ratioPlat(g), 0);
-  if (c.repas === 'petit_dej' || grps.length === 1 && grps[0].length === 1) {
-    return `<span class="who-line">${grps.map(g => esc(nomsGrp(g)) + lieuTag(g)).join(' · ')}</span>`;
-  }
-  return `<span class="who-line">${grps.map(g => `<span class="pp">${esc(nomsGrp(g))} <b class="num">${pct(ratioPlat(g) / tot)}</b>${lieuTag(g)}</span>`).join('')}</span>`;
+  return `<span class="who-line">${grps.map(g => esc(nomsGrp(g)) + lieuTag(g)).join(' · ')}</span>`;
 }
 function lieuTag(grp) {
   const l = LIEU_L[grp[0].lieu]; return l ? ` <span class="tag lieu">${esc(l)}</span>` : '';
@@ -556,8 +552,8 @@ function viewSemaine() {
     const out = creneauxDu(d).filter(c => c.repas === rep && (c.parts || []).some(p => p.personne_id === pid));
     return out.map(c => {
       const part = c.parts.find(p => p.personne_id === pid), r = c.recette_id ? S.recettes.get(c.recette_id) : null;
-      const grp = boites(c).find(g => g.includes(part)), tot = boites(c).reduce((s, g) => s + ratioPlat(g), 0);
-      const share = c.repas !== 'petit_dej' && boites(c).length > 1 ? `<span class="sp num">${pct(ratioPlat(grp) / tot)}${grp.length > 1 ? ' ' + esc(nomsGrp(grp)) : ''}</span>` : '';
+      const grp = boites(c).find(g => g.includes(part));
+      const share = grp.length > 1 ? `<span class="sp">${esc(nomsGrp(grp))}</span>` : '';
       const prov = PROV[c.provenance], l = LIEU_L[part.lieu];
       const label = `${esc(crTitre(c))}${c.accompagnement && c.repas !== 'petit_dej' ? `<span class="acc"> · ${esc(c.accompagnement)}</span>` : ''}`;
       return `<div class="wk-item">${r ? `<a href="#/r/${esc(encodeURIComponent(r.id))}">${label}</a>` : `<span>${label}</span>`}
@@ -584,7 +580,7 @@ function viewSemaine() {
       ${rows}
       <tr class="first"><th class="rep" colspan="2">Féculent cru</th>${fecRow}</tr>
     </tbody></table></div>
-  <p class="hint">Pourcentages : part du plat servie à chacun sur ce repas (Papa ${fmtR(personne('papa').ratio_plat)} · Maman ${fmtR(personne('maman').ratio_plat)} · Fils ${fmtR(personne('fils').ratio_plat)}).</p>`}`;
+  <p class="hint">Le partage du plat entre les boîtes se fait au batch : voir la séance.</p>`}`;
 }
 
 // Séance : où part chaque plat, en % du plat entier (boîtes et repas).
@@ -595,16 +591,15 @@ function seaRepartition(s) {
       .sort((a, b) => a.date.localeCompare(b.date) || REPAS.findIndex(x => x[0] === a.repas) - REPAS.findIndex(x => x[0] === b.repas));
     if (!cs.length) return '';
     const portions = Number(r.portions) || 6;
-    let used = 0;
-    const lines = cs.flatMap(c => boites(c).map(g => {
-      const part = ratioPlat(g) / portions; used += part;
+    // Tout le plat est partagé entre les repas prévus : la somme fait toujours 100 %.
+    const grps = cs.flatMap(c => boites(c).map(g => [c, g]));
+    const total = grps.reduce((s, [, g]) => s + ratioPlat(g), 0) || 1;
+    const lines = grps.map(([c, g]) => {
+      const part = ratioPlat(g) / total;
       const lb = g[0].lieu === 'lunch_box' || g[0].lieu === 'nounou';
       return `<div class="cell rep-l"><span class="main"><span class="t">${lb ? 'Boîte ' : ''}${esc(nomsGrp(g))}</span><span class="cnote">${esc(cap(dayLabel(c.date, { weekday: 'short', day: 'numeric' })))} ${REPAS_L[c.repas].toLowerCase()}${PROV[c.provenance] ? ' · ' + PROV[c.provenance][0].toLowerCase() : ''}</span></span><span class="r num">${pct(part)}</span></div>`;
-    }));
-    const reste = 1 - used;
-    const fin = reste > 0.005 ? `<div class="cell rep-l rest"><span class="main"><span class="t">Reste non planifié</span><span class="cnote">→ congélateur</span></span><span class="r num">${pct(reste)}</span></div>`
-      : reste < -0.005 ? `<div class="cell rep-l over"><span class="main"><span class="t">Dépasse le plat</span><span class="cnote">${fmtR(used * portions)} portions prévues pour ${portions}</span></span><span class="r num">+${pct(-reste)}</span></div>` : '';
-    return `<div class="grp">${esc(r.titre)} · ${portions} portions</div><div class="group">${lines.join('')}${fin}</div>`;
+    });
+    return `<div class="grp">${esc(r.titre)} · ${portions} portions</div><div class="group">${lines.join('')}</div>`;
   }).join('');
   return blocs ? `<div class="section-h">Répartition du plat cuit</div>${blocs}<p class="hint">Pesez le plat cuit entier et appliquez les pourcentages. Une portion = la part de Maman.</p>` : '';
 }
