@@ -1,8 +1,8 @@
 // Carnet Repas — garde l'appli disponible hors ligne.
 // Incrémentez VERSION à chaque mise en ligne d'une nouvelle version du code.
-const VERSION = 'carnet-v5';
+const VERSION = 'carnet-v1.0';
 const SHELL = [
-  './', 'index.html', 'styles.css?v=3', 'app.js?v=3', 'config.js?v=3',
+  './', 'index.html', 'styles.css?v=v1.0', 'app.js?v=v1.0', 'config.js?v=v1.0',
   'vendor/supabase.js', 'manifest.webmanifest',
   'icons/apple-touch-icon.png', 'icons/icon-192.png', 'icons/icon-512.png', 'icons/favicon.png'
 ];

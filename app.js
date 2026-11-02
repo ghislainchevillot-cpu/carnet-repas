@@ -1,6 +1,7 @@
 /* Carnet Repas — appli web installable (Supabase + GitHub Pages) */
 'use strict';
 
+const APP_VERSION = '1.0';
 const CFG = window.CARNET_CONFIG || {};
 const CONFIGURED = CFG.supabaseUrl && !/VOTRE/.test(CFG.supabaseUrl) && CFG.supabaseAnonKey && !/VOTRE/.test(CFG.supabaseAnonKey);
 const sb = CONFIGURED ? window.supabase.createClient(CFG.supabaseUrl, CFG.supabaseAnonKey, {
@@ -438,6 +439,7 @@ function viewSettings() {
     <div class="cell"><span class="k">Connecté</span><span class="v">${esc(email)}</span></div>
     <div class="cell"><span class="k">Accès</span><span class="v">${S.role === 'editeur' ? 'Lecture et modification' : S.role === 'lecteur' ? 'Lecture seule' : 'Aucun accès aux recettes'}</span></div>
     <div class="cell"><span class="k">Recettes</span><span class="v num">${S.recettes.size} · ${S.seances.size} séances · ${S.creneaux.length} repas planifiés</span></div>
+    <div class="cell"><span class="k">Version</span><span class="v">${APP_VERSION}</span></div>
     <div class="cell"><span class="k">Synchronisé</span><span class="v">${S.syncedAt ? esc(fmtDate(S.syncedAt, { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })) : '—'}</span></div>
   </div>
   <div class="btns">
